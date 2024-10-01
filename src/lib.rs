@@ -105,7 +105,7 @@ dual licensed as above, without any additional terms or conditions.
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
-use failure::ResultExt;
+use anyhow::Context;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -152,7 +152,7 @@ pub struct Options {
 }
 
 /// Snip the functions from the input file described by the options.
-pub fn snip(module: &mut walrus::Module, options: Options) -> Result<(), failure::Error> {
+pub fn snip(module: &mut walrus::Module, options: Options) -> anyhow::Result<()> {
     if !options.skip_producers_section {
         module
             .producers
@@ -173,7 +173,7 @@ pub fn snip(module: &mut walrus::Module, options: Options) -> Result<(), failure
     Ok(())
 }
 
-fn build_regex_set(mut options: Options) -> Result<regex::RegexSet, failure::Error> {
+fn build_regex_set(mut options: Options) -> anyhow::Result<regex::RegexSet> {
     // Snip the Rust `fmt` code, if requested.
     if options.snip_rust_fmt_code {
         // Mangled symbols.
@@ -218,6 +218,7 @@ fn find_functions_to_snip(
         .filter_map(|f| {
             f.name.as_ref().and_then(|name| {
                 if names.contains(name) || re_set.is_match(name) {
+                    eprintln!("Snipping {name}");
                     Some(f.id())
                 } else {
                     None
@@ -253,7 +254,11 @@ fn replace_calls_with_unreachable(
     }
 
     impl VisitorMut for Replacer<'_> {
-        fn visit_instr_mut(&mut self, instr: &mut walrus::ir::Instr) {
+        fn visit_instr_mut(
+            &mut self,
+            instr: &mut walrus::ir::Instr,
+            _loc: &mut walrus::ir::InstrLocId,
+        ) {
             if self.should_snip_call(instr) {
                 *instr = walrus::ir::Unreachable {}.into();
             }
@@ -319,31 +324,27 @@ fn snip_table_elements(module: &mut walrus::Module, to_snip: &HashSet<walrus::Fu
     };
 
     for t in module.tables.iter_mut() {
-        if let walrus::TableKind::Function(ref mut ft) = t.kind {
+        if let walrus::RefType::Funcref = t.element_ty {
             let types = &mut module.types;
             let locals = &mut module.locals;
             let funcs = &mut module.funcs;
 
-            ft.elements
-                .iter_mut()
-                .flat_map(|el| el)
-                .filter(|f| to_snip.contains(f))
-                .for_each(|el| {
-                    let ty = funcs.get(*el).ty();
-                    *el = *unreachable_funcs
-                        .entry(ty)
-                        .or_insert_with(|| make_unreachable_func(ty, types, locals, funcs));
-                });
-
-            ft.relative_elements
-                .iter_mut()
-                .flat_map(|(_, elems)| elems.iter_mut().filter(|f| to_snip.contains(f)))
-                .for_each(|el| {
-                    let ty = funcs.get(*el).ty();
-                    *el = *unreachable_funcs
-                        .entry(ty)
-                        .or_insert_with(|| make_unreachable_func(ty, types, locals, funcs));
-                });
+            for &seg_id in &t.elem_segments {
+                match module.elements.get_mut(seg_id).items {
+                    walrus::ElementItems::Functions(ref mut vec) => {
+                        for f in vec {
+                            if !to_snip.contains(&f) {
+                                continue;
+                            }
+                            let ty = funcs.get(*f).ty();
+                            *f = *unreachable_funcs
+                                .entry(ty)
+                                .or_insert_with(|| make_unreachable_func(ty, types, locals, funcs));
+                        }
+                    }
+                    walrus::ElementItems::Expressions { .. } => unreachable!(),
+                }
+            }
         }
     }
 }

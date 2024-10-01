@@ -1,20 +1,16 @@
-use failure::ResultExt;
+use anyhow::Context;
 use std::fs;
 use std::io::{self, Write};
 use std::process;
 
 fn main() {
     if let Err(e) = try_main() {
-        eprintln!("error: {}", e);
-        for c in e.iter_chain().skip(1) {
-            eprintln!("  caused by {}", c);
-        }
-        eprintln!("{}", e.backtrace());
+        eprintln!("Error: {:?}", e);
         process::exit(1)
     }
 }
 
-fn try_main() -> Result<(), failure::Error> {
+fn try_main() -> anyhow::Result<()> {
     let matches = parse_args();
 
     let mut opts = wasm_snip::Options::default();
@@ -43,7 +39,7 @@ fn try_main() -> Result<(), failure::Error> {
 
     let config = walrus_config_from_options(&opts);
     let path = matches.value_of("input").unwrap();
-    let buf = fs::read(&path).with_context(|_| format!("failed to read file {}", path))?;
+    let buf = fs::read(&path).with_context(|| format!("failed to read file {}", path))?;
     let mut module = config.parse(&buf)?;
 
     wasm_snip::snip(&mut module, opts).context("failed to snip functions from wasm module")?;
@@ -51,7 +47,7 @@ fn try_main() -> Result<(), failure::Error> {
     if let Some(output) = matches.value_of("output") {
         module
             .emit_wasm_file(output)
-            .with_context(|_| format!("failed to emit snipped wasm to {}", output))?;
+            .with_context(|| format!("failed to emit snipped wasm to {}", output))?;
     } else {
         let wasm = module.emit_wasm();
         let stdout = io::stdout();
